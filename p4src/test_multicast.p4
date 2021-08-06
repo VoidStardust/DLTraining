@@ -17,14 +17,17 @@ const int IPV4_LPM_SIZE  = 12288;
 
 //
 #define INDEX_WIDTH   32
-#define INDEX_SIZE    128
+#define INDEX_VALID   17
+#define INDEX_SIZE    65536 // 2 ^ (INDEX_VALID - 1)
 
 #define VALUE_WIDTH   32
 
 #define COUNTER_WIDTH 32
 
-#define NODE_SIZE     1
-#define NODE_MAP      0x00000001
+#define NODE_SIZE     2
+#define NODE_MAP      0x00000003
+
+#define BITMAP_WIDTH  32
 
 /*************************************************************************
  ***********************  H E A D E R S  *********************************
@@ -34,7 +37,7 @@ const int IPV4_LPM_SIZE  = 12288;
 /*  The actual sets of headers processed by each gress can differ */
 
 /* Standard ethernet header */
-header ethernet_h 
+header ethernet_h
 {
     bit<48> dst_addr;
     bit<48> src_addr;
@@ -118,12 +121,31 @@ header payload_t
     bit<32> value8;
 }
 
-#define VALUE_REG(i)                                                                  \
-    Register<bit<VALUE_WIDTH>, bit<INDEX_WIDTH>>(INDEX_SIZE) value_##i##_reg;         \
+struct value_stack_t
+{
+    bit<32> value1;
+    bit<32> value2;
+}
+
+#define VALUE_REG(s, i)                                                               \
+    Register<bit<VALUE_WIDTH>, bit<INDEX_WIDTH>>(INDEX_SIZE) value_##s####i##_reg;    \
     RegisterAction<bit<VALUE_WIDTH>,                                                  \
                    bit<INDEX_WIDTH>,                                                  \
-                   bit<VALUE_WIDTH>>(value_##i##_reg)                                 \
-    value_##i##_add = {                                                               \
+                   bit<VALUE_WIDTH>>(value_##s####i##_reg)                            \
+    value_##s####i##_opr = {                                                          \
+        void apply(inout bit<VALUE_WIDTH> register_data, out bit<VALUE_WIDTH> result) \
+        {                                                                             \
+            if(add_##s##)                                                             \
+                register_data = register_data + hdr.load.value##i##;                  \
+            result = register_data;                                                   \
+            if(clr_##s##)                                                             \
+                register_data = 0;                                                    \
+        }                                                                             \
+    };                                                                                \
+    RegisterAction<bit<VALUE_WIDTH>,                                                  \
+                   bit<INDEX_WIDTH>,                                                  \
+                   bit<VALUE_WIDTH>>(value_##s####i##_reg)                            \
+    value_##s####i##_add = {                                                          \
         void apply(inout bit<VALUE_WIDTH> register_data, out bit<VALUE_WIDTH> result) \
         {                                                                             \
             register_data = register_data + hdr.load.value##i##;                      \
@@ -132,17 +154,8 @@ header payload_t
     };                                                                                \
     RegisterAction<bit<VALUE_WIDTH>,                                                  \
                    bit<INDEX_WIDTH>,                                                  \
-                   bit<VALUE_WIDTH>>(value_##i##_reg)                                 \
-    value_##i##_get = {                                                               \
-        void apply(inout bit<VALUE_WIDTH> register_data, out bit<VALUE_WIDTH> result) \
-        {                                                                             \
-            result = register_data;                                                   \
-        }                                                                             \
-    };                                                                                \
-    RegisterAction<bit<VALUE_WIDTH>,                                                  \
-                   bit<INDEX_WIDTH>,                                                  \
-                   bit<VALUE_WIDTH>>(value_##i##_reg)                                 \
-    value_##i##_rst = {                                                               \
+                   bit<VALUE_WIDTH>>(value_##s####i##_reg)                            \
+    value_##s####i##_clr = {                                                          \
         void apply(inout bit<VALUE_WIDTH> register_data, out bit<VALUE_WIDTH> result) \
         {                                                                             \
             result = register_data;                                                   \
@@ -272,169 +285,290 @@ control Ingress(
         ig_tm_md.mcast_grp_a = mcast_grp;
     }
 
-    VALUE_REG(1);
-    VALUE_REG(2);
-    VALUE_REG(3);
-    VALUE_REG(4);
-    VALUE_REG(5);
-    VALUE_REG(6);
-    VALUE_REG(7);
-    VALUE_REG(8);
+    // flag
+    bit<1> slot;
 
-    bit<32> count_value = 1;
-    Register<bit<COUNTER_WIDTH>, bit<INDEX_WIDTH>>(INDEX_SIZE) counter_reg;
+    bool add_0;
+    bool add_1;
+    bool clr_0;
+    bool clr_1;
+
+    bit<BITMAP_WIDTH> bitmap;
+
+    bit<BITMAP_WIDTH> status;
+    bit<COUNTER_WIDTH> n_node;
+
+    // value reg
+    VALUE_REG(0, 1);
+    VALUE_REG(0, 2);
+    VALUE_REG(0, 3);
+    VALUE_REG(0, 4);
+    VALUE_REG(0, 5);
+    VALUE_REG(0, 6);
+    VALUE_REG(0, 7);
+    VALUE_REG(0, 8);
+
+    VALUE_REG(1, 1);
+    VALUE_REG(1, 2);
+    VALUE_REG(1, 3);
+    VALUE_REG(1, 4);
+    VALUE_REG(1, 5);
+    VALUE_REG(1, 6);
+    VALUE_REG(1, 7);
+    VALUE_REG(1, 8);
+
+    // counter
+    // bit<32> count_value;
+
+    // Register<value_stack_t, bit<INDEX_WIDTH>>(INDEX_SIZE) counter_reg;
+    // RegisterAction<value_stack_t,
+    //                bit<INDEX_WIDTH>,
+    //                bit<COUNTER_WIDTH>>(counter_reg)
+    // counter_add = {
+    //     void apply(inout value_stack_t register_data, out bit<COUNTER_WIDTH> result)
+    //     {
+    //         if(slot == 0)
+    //         {
+    //             register_data.value1 = register_data.value1 + count_value;
+    //             result = register_data.value1;
+    //         }
+    //         else
+    //         {
+    //             register_data.value2 = register_data.value2 + count_value;
+    //             result = register_data.value2;
+    //         }
+    //     }
+    // };
+    // RegisterAction<value_stack_t,
+    //                bit<INDEX_WIDTH>,
+    //                bit<COUNTER_WIDTH>>(counter_reg)
+    // counter_rst = {
+    //     void apply(inout value_stack_t register_data, out bit<COUNTER_WIDTH> result)
+    //     {
+    //         if(slot == 0)
+    //         {
+    //             result = register_data.value1;
+    //             register_data.value1 = 0;
+    //         }
+    //         else
+    //         {
+    //             result = register_data.value2;
+    //             register_data.value2 = 0;
+    //         }
+    //     }
+    // };
+
+    Register<bit<COUNTER_WIDTH>, bit<INDEX_WIDTH>>(INDEX_SIZE) counter_reg_0;
     RegisterAction<bit<COUNTER_WIDTH>,
                    bit<INDEX_WIDTH>,
-                   bit<COUNTER_WIDTH>>(counter_reg)
-    counter_add = {
+                   bit<COUNTER_WIDTH>>(counter_reg_0)
+    count_0 = {
         void apply(inout bit<COUNTER_WIDTH> register_data, out bit<COUNTER_WIDTH> result)
         {
-            // if(register_data >= NODE_SIZE)
-            //     register_data = 0;
-
-            register_data = register_data + count_value;
+            register_data = register_data + 1;
             result = register_data;
         }
     };
     RegisterAction<bit<COUNTER_WIDTH>,
                    bit<INDEX_WIDTH>,
-                   bit<COUNTER_WIDTH>>(counter_reg)
-    counter_get = {
+                   bit<COUNTER_WIDTH>>(counter_reg_0)
+    get_counter_0 = {
         void apply(inout bit<COUNTER_WIDTH> register_data, out bit<COUNTER_WIDTH> result)
         {
+            result = register_data;
+        }
+    };
+
+    Register<bit<COUNTER_WIDTH>, bit<INDEX_WIDTH>>(INDEX_SIZE) counter_reg_1;
+    RegisterAction<bit<COUNTER_WIDTH>,
+                   bit<INDEX_WIDTH>,
+                   bit<COUNTER_WIDTH>>(counter_reg_1)
+    count_1 = {
+        void apply(inout bit<COUNTER_WIDTH> register_data, out bit<COUNTER_WIDTH> result)
+        {
+            register_data = register_data + 1;
             result = register_data;
         }
     };
     RegisterAction<bit<COUNTER_WIDTH>,
                    bit<INDEX_WIDTH>,
-                   bit<COUNTER_WIDTH>>(counter_reg)
-    counter_rst = {
+                   bit<COUNTER_WIDTH>>(counter_reg_1)
+    get_counter_1 = {
         void apply(inout bit<COUNTER_WIDTH> register_data, out bit<COUNTER_WIDTH> result)
         {
             result = register_data;
-            register_data = 0;
         }
     };
 
-    Register<bit<32>, bit<INDEX_WIDTH>>(INDEX_SIZE) node_map_reg;
-    RegisterAction<bit<32>,
+    // node map
+    // Register<value_stack_t, bit<INDEX_WIDTH>>(INDEX_SIZE) node_map_reg;
+    // RegisterAction<value_stack_t,
+    //                bit<INDEX_WIDTH>,
+    //                bit<32>>(node_map_reg)
+    // node_map_merge_0 = {
+    //     void apply(inout value_stack_t register_data, out bit<32> result)
+    //     {
+    //         // bit<32> temp;
+    //         // temp = register_data.value1 & hdr.load.bitmap;
+    //         result = register_data.value1 & hdr.load.bitmap;
+    //         register_data.value1 = register_data.value1 | hdr.load.bitmap;
+    //         // register_data.value2 = register_data.value2 & ~(hdr.load.bitmap);
+    //         // result = temp;
+    //     }
+    // };
+    // RegisterAction<value_stack_t,
+    //                bit<INDEX_WIDTH>,
+    //                bit<32>>(node_map_reg)
+    // node_map_merge_1 = {
+    //     void apply(inout value_stack_t register_data, out bit<32> result)
+    //     {
+    //         // bit<32> temp;
+    //         // temp = register_data.value2 & hdr.load.bitmap;
+    //         result = register_data.value2 & hdr.load.bitmap;
+    //         // register_data.value1 = register_data.value1 & ~(hdr.load.bitmap);
+    //         register_data.value2 = register_data.value2 | hdr.load.bitmap;
+    //         // result = temp;
+    //     }
+    // };
+    // RegisterAction<value_stack_t,
+    //                bit<INDEX_WIDTH>,
+    //                bit<32>>(node_map_reg)
+    // node_map_clean = {
+    //     void apply(inout value_stack_t register_data, out bit<32> result)
+    //     {
+    //         result = register_data;
+    //         register_data = 0;
+    //     }
+    // };
+
+    Register<bit<BITMAP_WIDTH>, bit<INDEX_WIDTH>>(INDEX_SIZE) node_map_reg_0;
+    RegisterAction<bit<BITMAP_WIDTH>,
                    bit<INDEX_WIDTH>,
-                   bit<32>>(node_map_reg)
-    node_map_merge = {
-        void apply(inout bit<32> register_data, out bit<32> result)
+                   bit<BITMAP_WIDTH>>(node_map_reg_0)
+    node_map_merge_0 = {
+        void apply(inout bit<BITMAP_WIDTH> register_data, out bit<BITMAP_WIDTH> result)
         {
-            bit<32> temp = register_data & hdr.load.bitmap;
-            register_data = register_data | hdr.load.bitmap;
+            bit<BITMAP_WIDTH> temp = register_data & bitmap;
+            register_data = register_data | bitmap;
             result = temp;
-            // if(register_data == NODE_MAP)
-            //     register_data = 0;
         }
     };
-    RegisterAction<bit<32>,
+    RegisterAction<bit<BITMAP_WIDTH>,
                    bit<INDEX_WIDTH>,
-                   bit<32>>(node_map_reg)
-    node_map_check = {
-        void apply(inout bit<32> register_data, out bit<32> result)
-        {
-            bit<32> temp = register_data & hdr.load.bitmap;
-            result = temp;
-        }
-    };
-    RegisterAction<bit<32>,
-                   bit<INDEX_WIDTH>,
-                   bit<32>>(node_map_reg)
-    node_map_clean = {
-        void apply(inout bit<32> register_data, out bit<32> result)
+                   bit<BITMAP_WIDTH>>(node_map_reg_0)
+    node_map_clear_0 = {
+        void apply(inout bit<BITMAP_WIDTH> register_data, out bit<BITMAP_WIDTH> result)
         {
             result = register_data;
-            register_data = 0;
+            register_data = register_data & ~(bitmap);
         }
     };
 
-    Register<bit<32>, bit<INDEX_WIDTH>>(INDEX_SIZE) ack_map_reg;
-    RegisterAction<bit<32>,
+    Register<bit<BITMAP_WIDTH>, bit<INDEX_WIDTH>>(INDEX_SIZE) node_map_reg_1;
+    RegisterAction<bit<BITMAP_WIDTH>,
                    bit<INDEX_WIDTH>,
-                   bit<32>>(ack_map_reg)
-    ack_map_merge = {
-        void apply(inout bit<32> register_data, out bit<32> result)
+                   bit<BITMAP_WIDTH>>(node_map_reg_1)
+    node_map_merge_1 = {
+        void apply(inout bit<BITMAP_WIDTH> register_data, out bit<BITMAP_WIDTH> result)
         {
-            register_data = register_data | hdr.load.bitmap;
-            result = register_data;
-            if(register_data == NODE_MAP)
-                register_data = 0;
+            bit<BITMAP_WIDTH> temp = register_data & bitmap;
+            register_data = register_data | bitmap;
+            result = temp;
         }
     };
+    RegisterAction<bit<BITMAP_WIDTH>,
+                   bit<INDEX_WIDTH>,
+                   bit<BITMAP_WIDTH>>(node_map_reg_1)
+    node_map_clear_1 = {
+        void apply(inout bit<BITMAP_WIDTH> register_data, out bit<BITMAP_WIDTH> result)
+        {
+            result = register_data;
+            register_data = register_data & ~(bitmap);
+        }
+    };
+
+    // bitmap table
+    action get_bitmap(bit<BITMAP_WIDTH> map)
+    {
+        bitmap = map;
+    }
+
+    table bitmap_mapping
+    {
+        key = {
+            ig_intr_md.ingress_port: exact;
+        }
+        actions = {
+            get_bitmap;
+        }
+        const entries = {
+            0   : get_bitmap(1 <<  0);
+            4   : get_bitmap(1 <<  1);
+            8   : get_bitmap(1 <<  2);
+            12  : get_bitmap(1 <<  3);
+            16  : get_bitmap(1 <<  4);
+            20  : get_bitmap(1 <<  5);
+            24  : get_bitmap(1 <<  6);
+            28  : get_bitmap(1 <<  7);
+            32  : get_bitmap(1 <<  8);
+            36  : get_bitmap(1 <<  9);
+            40  : get_bitmap(1 << 10);
+            44  : get_bitmap(1 << 11);
+            48  : get_bitmap(1 << 12);
+            52  : get_bitmap(1 << 13);
+            56  : get_bitmap(1 << 14);
+            60  : get_bitmap(1 << 15);
+            128 : get_bitmap(1 << 16);
+            132 : get_bitmap(1 << 17);
+            136 : get_bitmap(1 << 18);
+            140 : get_bitmap(1 << 19);
+            144 : get_bitmap(1 << 20);
+            148 : get_bitmap(1 << 21);
+            152 : get_bitmap(1 << 22);
+            156 : get_bitmap(1 << 23);
+            160 : get_bitmap(1 << 24);
+            164 : get_bitmap(1 << 25);
+            168 : get_bitmap(1 << 26);
+            172 : get_bitmap(1 << 27);
+            176 : get_bitmap(1 << 28);
+            180 : get_bitmap(1 << 29);
+            184 : get_bitmap(1 << 30);
+            188 : get_bitmap(1 << 31);
+        }
+        const default_action = get_bitmap(0);
+    }
     
     apply
     {
         if(hdr.load.isValid())
         {
-            bit<32> status;
-            bit<32> i;
+            slot = hdr.load.seq_no[INDEX_VALID:INDEX_VALID];
+            add_0 = false;
+            add_1 = false;
+            clr_0 = false;
+            clr_1 = false;
             
-            if(hdr.load.is_ack == 1)
+            bitmap_mapping.apply();
+            
+            if(slot == 0)
             {
-                status = ack_map_merge.execute(hdr.load.ack_no);
-                if(status == NODE_MAP) // full
+                status = node_map_merge_0.execute(hdr.load.seq_no);
+                node_map_clear_1.execute(hdr.load.seq_no);
+                if(status == 0) // haven't aggregated
                 {
-                    node_map_clean.execute(hdr.load.ack_no);
-
-                    counter_rst.execute(hdr.load.ack_no);
-
-                    value_1_rst.execute(hdr.load.ack_no);
-                    value_2_rst.execute(hdr.load.ack_no);
-                    value_3_rst.execute(hdr.load.ack_no);
-                    value_4_rst.execute(hdr.load.ack_no);
-                    value_5_rst.execute(hdr.load.ack_no);
-                    value_6_rst.execute(hdr.load.ack_no);
-                    value_7_rst.execute(hdr.load.ack_no);
-                    value_8_rst.execute(hdr.load.ack_no);
-
-                    hdr.load.is_clr = 1;
-
-                    multicast(1);
-                }
-                else // not full
-                {
-                    // reply clc
-                    send(192);
-                }
-            }
-            else if(hdr.load.is_agg == 1)
-            {
-                // if(hdr.load.resend != 1)
-                // {
-                //     status = node_map_merge.execute(hdr.load.seq_no);
-                // }
-                // else
-                // {
-                //     status = node_map_check.execute(hdr.load.seq_no);
-                // }
-
-                status = node_map_merge.execute(hdr.load.seq_no);
-                if(status != 0) // already aggregated
-                {
-                    count_value = 0;
-
-                    hdr.load.value1 = 0;
-                    hdr.load.value2 = 0;
-                    hdr.load.value3 = 0;
-                    hdr.load.value4 = 0;
-                    hdr.load.value5 = 0;
-                    hdr.load.value6 = 0;
-                    hdr.load.value7 = 0;
-                    hdr.load.value8 = 0;
+                    n_node = count_0.execute(hdr.load.seq_no);
+                    add_0 = true;
                 }
                 else
                 {
-                    count_value = 1;
+                    n_node = get_counter_0.execute(hdr.load.seq_no);
                 }
 
-                i = counter_add.execute(hdr.load.seq_no);
-                if(i >= NODE_SIZE)
+                if(n_node % NODE_SIZE == 0) // fulfilled
                 {
                     if(status == 0)
                     {
+                        clr_1 = true;
                         multicast(1);
                     }
                     else
@@ -446,15 +580,83 @@ control Ingress(
                 {
                     send(192);
                 }
+            }
+            else
+            {
+                node_map_clear_0.execute(hdr.load.seq_no);
+                status = node_map_merge_1.execute(hdr.load.seq_no);
+                if(status == 0) // haven't aggregated
+                {
+                    n_node = count_1.execute(hdr.load.seq_no);
+                    add_1 = true;
+                }
+                else
+                {
+                    n_node = get_counter_1.execute(hdr.load.seq_no);
+                }
 
-                hdr.load.value1 = value_1_add.execute(hdr.load.seq_no);
-                hdr.load.value2 = value_2_add.execute(hdr.load.seq_no);
-                hdr.load.value3 = value_3_add.execute(hdr.load.seq_no);
-                hdr.load.value4 = value_4_add.execute(hdr.load.seq_no);
-                hdr.load.value5 = value_5_add.execute(hdr.load.seq_no);
-                hdr.load.value6 = value_6_add.execute(hdr.load.seq_no);
-                hdr.load.value7 = value_7_add.execute(hdr.load.seq_no);
-                hdr.load.value8 = value_8_add.execute(hdr.load.seq_no);
+                if(n_node % NODE_SIZE == 0) // fulfilled
+                {
+                    if(status == 0)
+                    {
+                        clr_0 = true;
+                        multicast(1);
+                    }
+                    else
+                    {
+                        send(ig_intr_md.ingress_port);
+                    }
+                }
+                else
+                {
+                    send(192);
+                }
+            }
+
+            if(add_0)
+            {
+                hdr.load.value1 = value_01_add.execute(hdr.load.seq_no);
+                hdr.load.value2 = value_02_add.execute(hdr.load.seq_no);
+                hdr.load.value3 = value_03_add.execute(hdr.load.seq_no);
+                hdr.load.value4 = value_04_add.execute(hdr.load.seq_no);
+                hdr.load.value5 = value_05_add.execute(hdr.load.seq_no);
+                hdr.load.value6 = value_06_add.execute(hdr.load.seq_no);
+                hdr.load.value7 = value_07_add.execute(hdr.load.seq_no);
+                hdr.load.value8 = value_08_add.execute(hdr.load.seq_no);
+            }
+            else if(clr_0)
+            {
+                value_01_clr.execute(hdr.load.seq_no);
+                value_02_clr.execute(hdr.load.seq_no);
+                value_03_clr.execute(hdr.load.seq_no);
+                value_04_clr.execute(hdr.load.seq_no);
+                value_05_clr.execute(hdr.load.seq_no);
+                value_06_clr.execute(hdr.load.seq_no);
+                value_07_clr.execute(hdr.load.seq_no);
+                value_08_clr.execute(hdr.load.seq_no);
+            }
+
+            if(add_1)
+            {
+                hdr.load.value1 = value_11_add.execute(hdr.load.seq_no);
+                hdr.load.value2 = value_12_add.execute(hdr.load.seq_no);
+                hdr.load.value3 = value_13_add.execute(hdr.load.seq_no);
+                hdr.load.value4 = value_14_add.execute(hdr.load.seq_no);
+                hdr.load.value5 = value_15_add.execute(hdr.load.seq_no);
+                hdr.load.value6 = value_16_add.execute(hdr.load.seq_no);
+                hdr.load.value7 = value_17_add.execute(hdr.load.seq_no);
+                hdr.load.value8 = value_18_add.execute(hdr.load.seq_no);
+            }
+            else if(clr_1)
+            {
+                value_11_clr.execute(hdr.load.seq_no);
+                value_12_clr.execute(hdr.load.seq_no);
+                value_13_clr.execute(hdr.load.seq_no);
+                value_14_clr.execute(hdr.load.seq_no);
+                value_15_clr.execute(hdr.load.seq_no);
+                value_16_clr.execute(hdr.load.seq_no);
+                value_17_clr.execute(hdr.load.seq_no);
+                value_18_clr.execute(hdr.load.seq_no);
             }
         }
     }
